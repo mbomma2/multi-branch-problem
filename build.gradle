@@ -399,8 +399,6 @@ subprojects {
             dependency 'com.auth0:auth0:1.5.1'
             dependency 'com.auth0:auth0-spring-security-api:1.0.0'
 
-            dependency 'io.jsonwebtoken:jjwt:0.7.0'
-
             dependency 'org.hibernate.javax.persistence:hibernate-jpa-2.1-api:1.0.0.Final'
 
             //New Relic
@@ -423,8 +421,6 @@ subprojects {
         }
     }
 
-    apply plugin: 'java'
-    apply plugin: 'idea'
 
     dependencies {
         compileOnly 'com.google.code.findbugs:annotations'
