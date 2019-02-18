@@ -425,8 +425,6 @@ subprojects {
         }
     }
 
-    apply plugin: 'java'
-    apply plugin: 'idea'
 
     dependencies {
         compileOnly 'com.google.code.findbugs:annotations'
