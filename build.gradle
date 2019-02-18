@@ -47,7 +47,6 @@ buildscript {
             maven { url 'https://scm.devfactory.com/nexus/content/repositories/df-thirdparty' }
             jcenter()
             mavenCentral()
-            // Latest docker-java ALIEN versions location
             maven { url 'https://fastconnect.org/maven/content/repositories/opensource' }
         }
     }
