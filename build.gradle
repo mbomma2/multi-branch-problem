@@ -1,0 +1,437 @@
+import com.bmuschko.gradle.docker.DockerRemoteApiPlugin
+import com.devfactory.docker.gradle.DockerConfigFactory
+
+buildscript {
+    ext {
+        // Versions numbers here are only for dependencies which are somehow reference same version across the project.
+        // Versions for other dependencies should be specified only in `dependencyManagement` section.
+        // E.g. SpringBoot has gradle plugin dependency in `buildscript` and it also has maven dependency in
+        // `dependencyManagement` section, so we keep its version here.
+        versions = [
+                dfitest   : '0.9.4',
+                jackson   : '2.8.11',
+                jacksonDb : '2.8.11.2',
+                jacoco    : '0.7.9',
+                lombok    : '1.16.16',
+                springBoot: '1.5.10.RELEASE',
+                easyBatch : '5.0.0',
+                logback   : '1.1.11',
+                vcslib    : '1.1.8',
+                jiveVcslib: '0.1.0-E8CDF36',
+                fbVersion : '3.0.1',
+                tomcat    : '8.5.35'
+        ]
+
+        // Misc DevFactory specific properties
+        df = [
+                // Docker engines and registry
+                docker: [
+                        registry : 'registry2.swarm.devfactory.com',
+                        namespace: "${-> ext.df.docker.registry}/devfactory"
+                ]
+        ]
+
+        // Resolves full path to files located in root project gradle subfolder
+        gradleFile = { s -> "${rootDir}/gradle/${s}".toString() }
+        // Helps to create correct docker image name
+        dockerTag = { name, tag = null ->
+            "${ext.df.docker.namespace}/${name}:${tag ?: project.version}".toString()
+        }
+
+        // Maven repositories closure that is reused to setup buildscript and project repositories
+        mavenRepos = {
+            mavenLocal()
+            maven { url 'https://scm.devfactory.com/nexus/content/groups/public' }
+            maven { url 'https://scm.devfactory.com/nexus/content/repositories/releases' }
+            maven { url 'https://scm.devfactory.com/nexus/content/repositories/snapshots' }
+            maven { url 'https://scm.devfactory.com/nexus/content/repositories/df-thirdparty' }
+            maven { url 'https://plugins.gradle.org/m2/' }
+            jcenter()
+            mavenCentral()
+            // Latest docker-java ALIEN versions location
+            maven { url 'https://fastconnect.org/maven/content/repositories/opensource' }
+        }
+    }
+
+    repositories mavenRepos
+
+    dependencies {
+        gradleApi()
+        classpath 'io.franzbecker:gradle-lombok:1.11'
+        classpath 'org.ajoberstar:gradle-git:1.6.0'
+        classpath "org.springframework.boot:spring-boot-gradle-plugin:${versions.springBoot}"
+        classpath 'io.spring.gradle:dependency-management-plugin:0.6.1.RELEASE'
+        classpath "com.devfactory.docker:df-itest-gradle-plugin:${versions.dfitest}"
+        classpath 'com.github.ksoichiro:gradle-build-info-plugin:0.1.5'
+        classpath 'com.github.jengelman.gradle.plugins:shadow:1.2.4'
+        classpath 'com.moowork.gradle:gradle-node-plugin:1.2.0'
+        classpath 'de.undercouch:gradle-download-task:3.2.0'
+        classpath 'ru.alfalab.gradle:cucumber-reporting-gradle-plugin:0.1.0'
+        classpath 'gradle.plugin.com.dorongold.plugins:task-tree:1.3'
+    }
+}
+
+apply from: gradleFile('version.gradle')
+apply from: gradleFile('k8s_util.gradle')
+
+subprojects {
+    /**
+     * QA configuration tasks
+     */
+    apply plugin: 'checkstyle'
+    apply plugin: 'findbugs'
+    apply plugin: 'pmd'
+
+    checkstyle {
+        toolVersion = '8.15'
+        configFile = file("${rootProject.projectDir}/qa/checkstyle.xml")
+        ignoreFailures = false
+    }
+
+    findbugs {
+        toolVersion = versions.fbVersion
+        ignoreFailures = false
+    }
+
+    pmd {
+        toolVersion = '6.10.0'
+        ruleSets = []
+        ignoreFailures = false
+        rulePriority = 3
+        ruleSetFiles = files("${rootProject.projectDir}/qa/pmd.xml")
+    }
+
+    tasks.withType(FindBugs) {
+        reports {
+            xml.enabled = true
+            html.enabled = false
+        }
+    }
+
+    ext.buildFrontend = {
+        project.hasProperty('withFrontend') && project.property('withFrontend').toBoolean()
+    }
+
+    tasks.withType(Javadoc) {
+        onlyIf { project.hasProperty('withJavadoc') && project.property('withJavadoc').toBoolean() }
+    }
+
+    apply from: gradleFile('java.gradle')
+    apply plugin: 'io.spring.dependency-management'
+
+    dependencyManagement {
+        imports {
+            mavenBom "org.springframework.boot:spring-boot-dependencies:${versions.springBoot}"
+            mavenBom 'org.springframework.cloud:spring-cloud-dependencies:Camden.SR1'
+            mavenBom 'com.amazonaws:aws-java-sdk-bom:1.11.48'
+        }
+
+        dependencies {
+            // CodeServer internals
+            dependency "com.devfactory.docker:df-itest-ext:${versions.dfitest}"
+            dependency "com.devfactory.docker:df-itest-core:${versions.dfitest}"
+
+            // Logging
+            dependencySet(group: 'ch.qos.logback', version: versions.logback) {
+                entry 'logback-classic'
+                entry 'logback-core'
+            }
+            dependency 'org.codehaus.janino:janino:3.0.6'
+            dependency 'biz.paluch.logging:logstash-gelf:1.11.0'
+            
+            // Tomcat
+            dependencySet(group: 'org.apache.tomcat.embed', version: versions.tomcat) {
+                entry 'tomcat-embed-core'
+                entry 'tomcat-embed-el'
+                entry 'tomcat-embed-jasper'
+                entry 'tomcat-embed-websocket'
+
+            }
+            dependencySet(group: 'org.apache.tomcat', version: versions.tomcat) {
+                entry 'tomcat-annotations-api'
+                entry 'tomcat-jdbc'
+                entry 'tomcat-jsp-api'
+            }
+
+            // Jackson
+            dependency "com.fasterxml.jackson.core:jackson-databind:${versions.jacksonDb}"
+            dependencySet(group: 'com.fasterxml.jackson.core', version: versions.jackson) {
+                entry 'jackson-annotations'
+                entry 'jackson-core'
+            }
+            dependencySet(group: 'com.fasterxml.jackson.datatype', version: versions.jackson) {
+                entry 'jackson-datatype-joda'
+                entry 'jackson-datatype-jsr310'
+                entry 'jackson-datatype-hibernate5'
+                entry 'jackson-datatype-jdk8'
+            }
+            dependencySet(group: 'com.fasterxml.jackson.dataformat', version: versions.jackson) {
+                entry 'jackson-dataformat-xml'
+                entry 'jackson-dataformat-yaml'
+                entry 'jackson-dataformat-cbor'
+            }
+            dependencySet(group: 'com.fasterxml.jackson.jaxrs', version: versions.jackson) {
+                entry 'jackson-jaxrs-base'
+                entry 'jackson-jaxrs-json-provider'
+            }
+            dependencySet(group: 'com.fasterxml.jackson.module', version: versions.jackson) {
+                entry 'jackson-module-jaxb-annotations'
+            }
+
+            // Swagger
+            dependencySet(group: 'io.swagger', version: '1.5.9') {
+                entry 'swagger-annotations'
+                entry 'swagger-models'
+                entry 'swagger-jersey2-jaxrs'
+            }
+            dependencySet(group: 'io.springfox', version: '2.6.1') {
+                entry 'springfox-swagger2'
+                entry 'springfox-swagger-ui'
+            }
+
+            // JMS
+            dependency 'com.amazonaws:amazon-sqs-java-messaging-lib:1.0.1'
+            dependencySet(group: 'org.apache.activemq', version: '5.14.3') {
+                entry 'activemq-broker'
+                entry 'activemq-client'
+                entry 'activemq-pool'
+                entry 'activemq-spring'
+                entry 'activemq-openwire-legacy'
+                entry 'activemq-kahadb-store'
+            }
+
+            // Servlets
+            dependency 'org.mitre.dsmiley.httpproxy:smiley-http-proxy-servlet:1.9'
+            dependency 'javax.servlet:javax.servlet-api:3.1.0'
+
+            // Health metrics
+            dependencySet(group: 'io.dropwizard.metrics', version: '3.1.2') {
+                entry 'metrics-core'
+                entry 'metrics-jvm'
+                entry 'metrics-healthchecks'
+            }
+
+            // Java Cache
+            dependency 'javax.cache:cache-api:1.0.0'
+
+            // Hazelcast
+            dependencySet(group: 'com.hazelcast', version: '3.9.3') {
+                entry 'hazelcast'
+                entry 'hazelcast-client'
+                entry 'hazelcast-spring'
+            }
+
+            dependency 'com.hazelcast:hazelcast-kubernetes:1.1.0'
+            dependency 'io.fabric8:kubernetes-client:3.1.10'
+
+            // DB
+            dependency 'com.zaxxer:HikariCP:3.2.0'
+            dependency 'mysql:mysql-connector-java:5.1.47'
+            dependency 'org.flywaydb:flyway-core:4.1.2'
+            dependency 'org.sql2o:sql2o:1.5.4'
+
+            // REST clients
+            dependencySet(group: 'io.github.openfeign', version: '9.7.0') {
+                entry 'feign-core'
+                entry 'feign-jackson'
+                entry 'feign-okhttp'
+                entry 'feign-slf4j'
+                entry 'feign-java8'
+            }
+
+            dependency 'io.github.openfeign.form:feign-form:2.0.6'
+            dependency 'org.apache.oltu.oauth2:org.apache.oltu.oauth2.client:1.0.1'
+
+            dependency 'com.squareup.okhttp3:okhttp:3.10.0'
+
+            // Apache HTTP client
+            dependencySet(group: 'org.apache.httpcomponents', version: '4.5.2') {
+                entry 'httpclient'
+                entry 'httpmime'
+            }
+
+            // Apache Commons
+            dependency 'org.apache.commons:commons-lang3:3.5'
+            dependency 'org.apache.commons:commons-collections4:4.1'
+            dependency 'org.apache.commons:commons-csv:1.4'
+            dependency 'commons-codec:commons-codec:1.11'
+            dependency 'commons-io:commons-io:2.5'
+            dependency 'commons-lang:commons-lang:2.6'
+            dependency 'commons-validator:commons-validator:1.5.1'
+
+            // Netty
+            dependencySet(group: 'io.netty', version: '4.1.12.Final') {
+                entry 'netty-all'
+                entry 'netty-buffer'
+                entry 'netty-codec'
+                entry 'netty-codec-socks'
+                entry 'netty-codec-http'
+                entry 'netty-handler'
+                entry 'netty-handler-proxy'
+                entry 'netty-resolver'
+                entry 'netty-transport'
+                entry 'netty-transport-native-epoll'
+            }
+
+            // Git
+            dependencySet(group: 'org.eclipse.jgit', version: '4.11.0.201803080745-r') {
+                entry 'org.eclipse.jgit'
+                entry 'org.eclipse.jgit.archive'
+            }
+
+            // Javasimon
+            dependencySet(group: 'org.javasimon', version: '4.1.2') {
+                entry 'javasimon-core'
+                entry 'javasimon-jdbc41'
+                entry 'javasimon-javaee'
+                entry 'javasimon-spring'
+                entry 'javasimon-console-embed'
+            }
+
+            // Stash
+            dependency 'com.atlassian.stash:stash-java-client-httpclient:1.5.0'
+
+            // Github
+            dependency 'org.eclipse.mylyn.github:org.eclipse.egit.github.core:4.6.0.201612231935-r'
+
+            // Misc
+            dependency 'org.springframework.retry:spring-retry:1.2.1.RELEASE'
+            dependency 'javax.validation:validation-api:1.1.0.Final'
+            dependency 'com.google.guava:guava:27.0.1-jre'
+            dependency 'com.google.code.findbugs:jsr305:3.0.1'
+            dependency 'net.jodah:failsafe:1.0.4'
+            dependency 'org.modelmapper:modelmapper:1.1.2'
+            dependency 'com.brsanthu:migbase64:2.2'
+            dependency 'com.beust:jcommander:1.60'
+            dependency 'com.github.docker-java:docker-java:3.0.14'
+            dependency "org.easybatch:easybatch-core:${versions.easyBatch}"
+            dependency 'com.cronutils:cron-utils:7.0.0'
+            dependency 'org.quartz-scheduler:quartz:2.3.0'
+            dependency 'org.quartz-scheduler:quartz-jobs:2.3.0'
+            dependency 'com.jayway.jsonpath:json-path:2.4.0'
+
+            // FindBugs
+            dependencySet(group: 'com.google.code.findbugs', version: versions.fbVersion) {
+                entry 'annotations'
+                entry 'jsr305'
+            }
+
+            // Shims
+            dependency 'com.jcabi:jcabi-github:0.32'
+            dependency 'com.atlassian.fugue:fugue:2.2.1'
+            dependency 'com.google.code.findbugs:annotations:2.0.1'
+            dependencySet(group: 'com.atlassian.jira', version: '5.0.4') {
+                entry 'jira-rest-java-client-core'
+                entry 'jira-rest-java-client-api'
+            }
+            dependency 'com.google.oauth-client:google-oauth-client:1.22.0'
+
+            // Encryption
+            dependencySet(group: 'org.jasypt', version: '1.9.2') {
+                entry 'jasypt'
+            }
+
+            // Benchmarks
+            dependencySet(group: 'org.openjdk.jmh', version: '1.19') {
+                entry 'jmh-core'
+                entry 'jmh-generator-annprocess'
+            }
+
+            //VCS libs
+            dependencySet(group: 'com.devfactory.codeserver', version: "${versions.vcslib}") {
+                entry 'df-codecache-vcs-api'
+                entry 'df-codecache-svn-provider'
+                entry 'df-codecache-svn-operations'
+                entry 'df-codecache-perforce-provider'
+                entry 'df-codecache-perforce-operations'
+                entry 'df-codecache-clearcase-provider'
+                entry 'df-codecache-clearcase-operations'
+            }
+
+            dependencySet(group: 'com.aurea.codecache', version: "${versions.jiveVcslib}") {
+                entry 'svn.provider'
+                entry 'svn.operations'
+            }
+
+            // Testing
+            dependency 'junit:junit:4.12'
+            dependency 'org.assertj:assertj-core:3.6.2'
+            dependency 'pl.pragmatists:JUnitParams:1.0.6'
+            dependency 'org.seleniumhq.selenium:selenium-support:3.0.1'
+            dependency 'org.seleniumhq.selenium:selenium-htmlunit-driver:2.52.0'
+            dependency 'org.seleniumhq.selenium:selenium-java:3.4.0'
+            dependency 'io.github.bonigarcia:webdrivermanager:1.6.2'
+            dependency 'info.cukes:cucumber-java:1.2.5'
+            dependency 'info.cukes:cucumber-junit:1.2.5'
+            dependency 'info.cukes:cucumber-spring:1.2.5'
+            dependency 'net.masterthought:cucumber-reporting:3.7.0'
+            dependency 'com.google.jimfs:jimfs:1.1'
+            dependency 'org.glassfish:javax.json:1.1.2'
+
+            dependencySet(group: 'org.hamcrest', version: '1.3') {
+                entry 'hamcrest-all'
+                entry 'hamcrest-core'
+                entry 'hamcrest-library'
+            }
+
+            dependency 'org.mockito:mockito-core:2.23.4'
+
+            dependencySet(group: 'org.powermock', version: '2.0.0-RC.4') {
+                entry 'powermock-core'
+                entry 'powermock-api-mockito2'
+                entry 'powermock-module-junit4'
+            }
+
+            // Update carefully validating dependencies compatibility
+            // https://neo4j.com/docs/ogm-manual/current/reference/#_compatibility
+            dependency 'org.neo4j:neo4j:3.1.0'
+            dependency 'org.neo4j:neo4j-jdbc-bolt:3.1.0'
+            dependencySet(group: 'org.neo4j', version: '2.1.3') {
+                entry 'neo4j-ogm-bolt-driver'
+                entry 'neo4j-ogm-embedded-driver'
+            }
+
+            dependency 'com.github.ulisesbocchio:jasypt-spring-boot-starter:1.12'
+
+            dependency 'com.google.api-client:google-api-client:1.22.0'
+            dependency 'com.google.oauth-client:google-oauth-client-jetty:1.22.0'
+            dependency 'com.google.apis:google-api-services-sheets:v4-rev478-1.22.0'
+
+            //auth0 framework
+            dependency 'com.auth0:auth0:1.5.1'
+            dependency 'com.auth0:auth0-spring-security-api:1.0.0'
+
+            dependency 'io.jsonwebtoken:jjwt:0.7.0'
+
+            dependency 'org.hibernate.javax.persistence:hibernate-jpa-2.1-api:1.0.0.Final'
+
+            //New Relic
+            dependency 'com.newrelic.agent.java:newrelic-api:3.30.0'
+            
+            // Testrail
+            dependency 'com.devfactory:testrail-junit-reporter:0.1.7'
+        }
+    }
+
+    afterEvaluate {
+        // Auto-detect docker environment
+        plugins.withType(DockerRemoteApiPlugin) {
+            DockerConfigFactory.configureProject(project)
+            project.dependencies {
+                dockerJava 'com.github.docker-java:docker-java',
+                        'org.slf4j:slf4j-simple',
+                        'cglib:cglib:3.2.4'
+            }
+        }
+    }
+
+    apply plugin: 'java'
+    apply plugin: 'idea'
+
+    dependencies {
+        compileOnly 'com.google.code.findbugs:annotations'
+        compileOnly 'com.google.code.findbugs:jsr305'
+        testCompile 'com.google.code.findbugs:annotations'
+        testCompile 'com.google.code.findbugs:jsr305'
+    }
+}
