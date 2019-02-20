@@ -69,7 +69,6 @@ buildscript {
     }
 }
 
-apply from: gradleFile('version.gradle')
 apply from: gradleFile('k8s_util.gradle')
 
 subprojects {
