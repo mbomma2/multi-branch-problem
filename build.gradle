@@ -394,6 +394,7 @@ subprojects {
             dependency 'com.google.oauth-client:google-oauth-client-jetty:1.22.0'
             dependency 'com.google.apis:google-api-services-sheets:v4-rev478-1.22.0'
 
+
             dependency 'org.hibernate.javax.persistence:hibernate-jpa-2.1-api:1.0.0.Final'
 
             //New Relic
